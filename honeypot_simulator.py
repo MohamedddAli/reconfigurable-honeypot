@@ -13,8 +13,8 @@ class HoneypotSimulator:
 
     def __init__(self, target_ip="127.0.0.1", intensity="medium"):
         # Configuration for the simulator
-        self.target_ip = target_ip
-        self.intensity = intensity
+        self.target_ip = target_ip # local-hostt ip address
+        self.intensity = intensity # medium intensity
 
         # Common ports that attackers often probe
         self.target_ports = [21, 22, 23, 25, 80, 443, 3306, 5432]
@@ -76,7 +76,7 @@ class HoneypotSimulator:
                     except socket.timeout:
                         print(f"[-] No response received from port {port}")
 
-                    # Add realistic delay between commands
+                    # Add realistic delay between commands based on intensity
                     time.sleep(random.uniform(*self.intensity_settings[self.intensity]["delay_range"]))
 
             sock.close()
@@ -89,17 +89,18 @@ class HoneypotSimulator:
             print(f"[-] Error connecting to port {port}: {e}")
 
 
-
-    def simulate_port_scan(self):
+    # going through each port and seeing what service is available
+    def simulate_port_scan(self): # simulate port scan (similar to nmap)
         """
         Simulates a basic port scan across common ports
         """
         print(f"\n[*] Starting port scan simulation against {self.target_ip}")
         for port in self.target_ports:
             self.simulate_connection(port)
-            time.sleep(random.uniform(0.1, 0.3))
+            time.sleep(random.uniform(0.1, 0.3)) # delay between each port scan to make it look more realistic
 
 
+    # sends usernames and passwords to SSH and FTP services
     def simulate_brute_force(self, port):
         """
         Simulates a brute force attack against a specific service
@@ -129,6 +130,7 @@ class HoneypotSimulator:
                 except Exception as e:
                     print(f"[-] Error in brute force attempt: {e}")
 
+    # randomly choosing different attack type (port scan, brute force, connection to ports)
     def run_continuous_simulation(self, duration=300):
         """
         Runs a continuous simulation for a specified duration
@@ -138,7 +140,7 @@ class HoneypotSimulator:
 
         end_time = time.time() + duration
 
-        with ThreadPoolExecutor(
+        with ThreadPoolExecutor( # used to run multiple attacks simultaneously
             max_workers=self.intensity_settings[self.intensity]["max_threads"]
         ) as executor:
             while time.time() < end_time:
