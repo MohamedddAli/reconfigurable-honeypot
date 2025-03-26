@@ -84,6 +84,30 @@ class Honeypot:
         except Exception as e:
             print(f"Error starting listener on port {port}: {e}")
 
+
+def main():
+    honeypot = Honeypot()
+
+    # Start listeners for each port in separate threads
+    for port in honeypot.ports:
+        listener_thread = threading.Thread(
+            target=honeypot.start_listener,
+            args=(port,)
+        )
+        listener_thread.daemon = True
+        listener_thread.start()
+
+    try:
+        # Keep main thread alive
+        while True:
+            time.sleep(1) # giving a warning here
+    except KeyboardInterrupt:
+        print("\n[*] Shutting down honeypot...")
+        sys.exit(0)
+
+    if __name__ == "__main__":
+        main()
+
         
 
 
