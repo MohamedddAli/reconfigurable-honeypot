@@ -3,6 +3,7 @@ import sys
 import datetime
 import json
 import threading
+import time
 from pathlib import Path
 
 # Configure logging directory
@@ -105,8 +106,8 @@ def main():
         print("\n[*] Shutting down honeypot...")
         sys.exit(0)
 
-    if __name__ == "__main__":
-        main()
+if __name__ == "__main__":
+    main()
 
         
 
