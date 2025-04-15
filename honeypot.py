@@ -51,37 +51,37 @@ class Honeypot:
                 if not data:
                     break
 
-            self.log_activity(port, remote_ip, data)
-            command = data.decode('utf-8', errors='ignore').strip().upper()
+                self.log_activity(port, remote_ip, data)
+                command = data.decode('utf-8', errors='ignore').strip().upper()
 
-            # Simulated service responses
-            if port == 21:  # FTP
-                if "USER" in command:
-                    response = "331 Username OK, need password.\r\n"
-                elif "PASS" in command:
-                    response = "530 Login incorrect.\r\n"
-                elif "LIST" in command:
-                    response = "150 Here comes the directory listing.\r\n226 Directory send OK.\r\n"
-                elif "STOR" in command:
-                    response = "550 Permission denied.\r\n"
+                # Simulated service responses
+                if port == 21:  # FTP
+                    if "USER" in command:
+                        response = "331 Username OK, need password.\r\n"
+                    elif "PASS" in command:
+                        response = "530 Login incorrect.\r\n"
+                    elif "LIST" in command:
+                        response = "150 Here comes the directory listing.\r\n226 Directory send OK.\r\n"
+                    elif "STOR" in command:
+                        response = "550 Permission denied.\r\n"
+                    else:
+                        response = "502 Command not implemented.\r\n"
+                elif port == 22:  # SSH
+                    if ":" in command:
+                        response = "Permission denied, please try again.\n"
+                    else:
+                        response = "Protocol mismatch.\n"
+                elif port == 80 or port == 443:  # HTTP/HTTPS
+                    if command.startswith("GET"):
+                        response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>FAKE HTML TEXT</h1>"
+                    elif command.startswith("POST"):
+                        response = "HTTP/1.1 403 Forbidden\r\n\r\n"
+                    else:
+                        response = "HTTP/1.1 400 Bad Request\r\n\r\n"
                 else:
-                    response = "502 Command not implemented.\r\n"
-            elif port == 22:  # SSH
-                if ":" in command:
-                    response = "Permission denied, please try again.\n"
-                else:
-                    response = "Protocol mismatch.\n"
-            elif port == 80 or port == 443:  # HTTP/HTTPS
-                if command.startswith("GET"):
-                    response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Welcome to the IoT device</h1>"
-                elif command.startswith("POST"):
-                    response = "HTTP/1.1 403 Forbidden\r\n\r\n"
-                else:
-                    response = "HTTP/1.1 400 Bad Request\r\n\r\n"
-            else:
-                response = "Command not recognized.\r\n"
+                    response = "Command not recognized.\r\n"
 
-            client_socket.send(response.encode())
+                client_socket.send(response.encode())
 
         except Exception as e:
             print(f"Error handling connection: {e}")
