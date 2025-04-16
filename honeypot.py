@@ -24,9 +24,17 @@ class Honeypot:
         if not decoded_data:
             return
 
-        profile = self.attacker_profiles.get(remote_ip, {"attempts": 0, "commands": []})
+        profile = self.attacker_profiles.get(remote_ip, {
+        "personality": "unknown",
+        "attempts": 0,
+        "commands": []
+        })
+
         profile["attempts"] += 1
         profile["commands"].append(decoded_data)
+
+        # Update personality based on new attempt count
+        profile["personality"] = self.assign_personality(remote_ip, profile["attempts"])
         self.attacker_profiles[remote_ip] = profile
 
         activity = {
@@ -42,16 +50,18 @@ class Honeypot:
             json.dump(activity, f)
             f.write('\n')
 
-    def assign_personality(self, remote_ip):
-        if remote_ip.startswith("192.168."):
-            personality = "strict"
+    def assign_personality(self, remote_ip, attempts=0):
+        if attempts > 10:
+            return "aggressive"
+        elif attempts > 5:
+            return "strict"
         elif remote_ip.startswith("127."):
-            personality = "friendly"
-        elif remote_ip.endswith(".100"):
-            personality = "aggressive"
+            return "friendly"
+        elif remote_ip.startswith("192.168."):
+            return "strict"
+        
         else:
-            personality = "random"
-        return personality
+            return "random"
 
     def handle_connection(self, client_socket, remote_ip, port):
         service_banners = {
@@ -61,12 +71,13 @@ class Honeypot:
             443: "HTTP/1.1 200 OK\r\nServer: Apache/2.4.41 (Ubuntu)\r\n\r\n"
         }
 
-        personality = self.assign_personality(remote_ip)
-        self.attacker_profiles[remote_ip] = {
-            "personality": personality,
-            "attempts": 0,
-            "commands": []
-        }
+        profile = self.attacker_profiles.get(remote_ip, {
+        "personality": self.assign_personality(remote_ip),
+        "attempts": 0,
+        "commands": []
+        })
+        personality = profile.get("personality", "unknown")
+        self.attacker_profiles[remote_ip] = profile
 
         try:
             if port in service_banners:
@@ -175,3 +186,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+        
+
+
+ 
