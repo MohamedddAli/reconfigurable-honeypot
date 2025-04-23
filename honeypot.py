@@ -10,13 +10,13 @@ from pathlib import Path
 LOG_DIR = Path("honeypot_logs")
 LOG_DIR.mkdir(exist_ok=True)
 
-
 class Honeypot:
     def __init__(self, bind_ip="0.0.0.0", ports=None):
         self.bind_ip = bind_ip
         self.ports = ports or [21, 22, 80, 443]  # Default ports to monitor
         self.active_connections = {}
         self.attacker_profiles = {}
+        self.connection_history = {}  # NEW: store timestamps per IP
         self.log_file = LOG_DIR / f"honeypot_{datetime.datetime.now().strftime('%Y%m%d')}.json"
 
     def log_activity(self, port, remote_ip, data):
@@ -25,15 +25,15 @@ class Honeypot:
             return
 
         profile = self.attacker_profiles.get(remote_ip, {
-        "personality": "unknown",
-        "attempts": 0,
-        "commands": []
+            "personality": "unknown",
+            "attempts": 0,
+            "commands": []
         })
 
         profile["attempts"] += 1
         profile["commands"].append(decoded_data)
 
-        # Update personality based on new attempt count
+        # Update personality based on new attempt count and DoS detection
         profile["personality"] = self.assign_personality(remote_ip, profile["attempts"])
         self.attacker_profiles[remote_ip] = profile
 
@@ -51,7 +51,9 @@ class Honeypot:
             f.write('\n')
 
     def assign_personality(self, remote_ip, attempts=0):
-        if attempts > 10:
+        if self.is_dos_detected(remote_ip):
+            return "flooder"  # NEW: category name for DoS personality
+        elif attempts > 10:
             return "aggressive"
         elif attempts > 5:
             return "strict"
@@ -59,9 +61,16 @@ class Honeypot:
             return "friendly"
         elif remote_ip.startswith("192.168."):
             return "strict"
-        
         else:
             return "random"
+
+    def is_dos_detected(self, remote_ip):
+        now = time.time()
+        history = self.connection_history.get(remote_ip, [])
+        history = [ts for ts in history if now - ts < 10]  # keep last 10 seconds only
+        history.append(now)
+        self.connection_history[remote_ip] = history
+        return len(history) > 20  # threshold for DoS detection
 
     def handle_connection(self, client_socket, remote_ip, port):
         service_banners = {
@@ -71,13 +80,21 @@ class Honeypot:
             443: "HTTP/1.1 200 OK\r\nServer: Apache/2.4.41 (Ubuntu)\r\n\r\n"
         }
 
+        self.is_dos_detected(remote_ip)  # update DoS tracking
+
         profile = self.attacker_profiles.get(remote_ip, {
-        "personality": self.assign_personality(remote_ip),
-        "attempts": 0,
-        "commands": []
+            "personality": self.assign_personality(remote_ip),
+            "attempts": 0,
+            "commands": []
         })
         personality = profile.get("personality", "unknown")
         self.attacker_profiles[remote_ip] = profile
+
+        # Block unwanted personalities from connecting
+        if personality in ["aggressive", "flooder"]:
+            print(f"[!] Connection from {remote_ip} blocked due to personality: {personality}")
+            client_socket.close()
+            return
 
         try:
             if port in service_banners:
@@ -95,10 +112,7 @@ class Honeypot:
 
                     if port == 21:  # FTP
                         if "USER" in command:
-                            if personality == "strict":
-                                response = "530 Access denied.\r\n"
-                            else:
-                                response = "331 Username OK, need password.\r\n"
+                            response = "530 Access denied.\r\n" if personality == "strict" else "331 Username OK, need password.\r\n"
                         elif "PASS" in command:
                             response = "530 Login incorrect.\r\n"
                         elif "LIST" in command:
@@ -110,10 +124,7 @@ class Honeypot:
 
                     elif port == 22:  # SSH
                         if ":" in command:
-                            if personality == "aggressive":
-                                response = "Too many failed attempts. Connection closed.\n"
-                            else:
-                                response = "Permission denied, please try again.\n"
+                            response = "Permission denied, please try again.\n"
                         else:
                             response = "Protocol mismatch.\n"
 
@@ -127,7 +138,6 @@ class Honeypot:
                             response = "HTTP/1.1 403 Forbidden\r\n\r\n"
                         else:
                             response = "HTTP/1.1 400 Bad Request\r\n\r\n"
-
                     else:
                         response = "Command not recognized.\r\n"
 
@@ -163,11 +173,9 @@ class Honeypot:
         except Exception as e:
             print(f"Error starting listener on port {port}: {e}")
 
-
 def main():
     honeypot = Honeypot()
 
-    # Start listeners for each port in separate threads
     for port in honeypot.ports:
         listener_thread = threading.Thread(
             target=honeypot.start_listener,
@@ -177,17 +185,11 @@ def main():
         listener_thread.start()
 
     try:
-        # Keep main thread alive
         while True:
-            time.sleep(1) # giving a warning here
+            time.sleep(1)
     except KeyboardInterrupt:
         print("\n[*] Shutting down honeypot...")
         sys.exit(0)
 
 if __name__ == "__main__":
     main()
-
-        
-
-
- 
