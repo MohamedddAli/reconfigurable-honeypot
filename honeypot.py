@@ -6,8 +6,9 @@ import threading
 import time
 from pathlib import Path
 
-# Configure logging directory
+# Configure logging directories
 LOG_DIR = Path("honeypot_logs")
+BLOCK_LOG_FILE = LOG_DIR / "blocked_attempts.json"
 LOG_DIR.mkdir(exist_ok=True)
 
 class Honeypot:
@@ -16,7 +17,9 @@ class Honeypot:
         self.ports = ports or [21, 22, 80, 443]  # Default ports to monitor
         self.active_connections = {}
         self.attacker_profiles = {}
-        self.connection_history = {}  # NEW: store timestamps per IP
+        self.connection_history = {}  # Track connection timestamps per IP
+        self.banned_ips = {}  # Temporarily banned IPs with expiry time
+        self.whitelisted_ips = ["192.168."]  # Whitelisted internal IP ranges
         self.log_file = LOG_DIR / f"honeypot_{datetime.datetime.now().strftime('%Y%m%d')}.json"
 
     def log_activity(self, port, remote_ip, data):
@@ -50,27 +53,38 @@ class Honeypot:
             json.dump(activity, f)
             f.write('\n')
 
+    def log_blocked_attempt(self, remote_ip, reason):
+        block_record = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "remote_ip": remote_ip,
+            "reason": reason
+        }
+        with open(BLOCK_LOG_FILE, 'a') as f:
+            json.dump(block_record, f)
+            f.write('\n')
+
+    def is_whitelisted(self, remote_ip):
+        return any(remote_ip.startswith(prefix) for prefix in self.whitelisted_ips)
+
     def assign_personality(self, remote_ip, attempts=0):
         if self.is_dos_detected(remote_ip):
-            return "flooder"  # NEW: category name for DoS personality
+            return "flooder"
         elif attempts > 10:
             return "aggressive"
         elif attempts > 5:
             return "strict"
-        elif remote_ip.startswith("127."):
+        elif self.is_whitelisted(remote_ip):
             return "friendly"
-        elif remote_ip.startswith("192.168."):
-            return "strict"
         else:
             return "random"
 
     def is_dos_detected(self, remote_ip):
         now = time.time()
         history = self.connection_history.get(remote_ip, [])
-        history = [ts for ts in history if now - ts < 10]  # keep last 10 seconds only
+        history = [ts for ts in history if now - ts < 10]
         history.append(now)
         self.connection_history[remote_ip] = history
-        return len(history) > 20  # threshold for DoS detection
+        return len(history) > 20
 
     def handle_connection(self, client_socket, remote_ip, port):
         service_banners = {
@@ -80,7 +94,17 @@ class Honeypot:
             443: "HTTP/1.1 200 OK\r\nServer: Apache/2.4.41 (Ubuntu)\r\n\r\n"
         }
 
-        self.is_dos_detected(remote_ip)  # update DoS tracking
+        now = time.time()
+        if remote_ip in self.banned_ips:
+            if self.banned_ips[remote_ip] > now:
+                print(f"[!] IP {remote_ip} is temporarily banned.")
+                self.log_blocked_attempt(remote_ip, "temporarily banned")
+                client_socket.close()
+                return
+            else:
+                del self.banned_ips[remote_ip]  # Ban expired
+
+        self.is_dos_detected(remote_ip)
 
         profile = self.attacker_profiles.get(remote_ip, {
             "personality": self.assign_personality(remote_ip),
@@ -90,9 +114,10 @@ class Honeypot:
         personality = profile.get("personality", "unknown")
         self.attacker_profiles[remote_ip] = profile
 
-        # Block unwanted personalities from connecting
         if personality in ["aggressive", "flooder"]:
-            print(f"[!] Connection from {remote_ip} blocked due to personality: {personality}")
+            print(f"[!] Blocking {remote_ip} with personality '{personality}'")
+            self.log_blocked_attempt(remote_ip, personality)
+            self.banned_ips[remote_ip] = now + 60  # Ban for 60 seconds
             client_socket.close()
             return
 
@@ -110,7 +135,7 @@ class Honeypot:
                     command = data.decode('utf-8', errors='ignore').strip().upper()
                     response = ""
 
-                    if port == 21:  # FTP
+                    if port == 21:
                         if "USER" in command:
                             response = "530 Access denied.\r\n" if personality == "strict" else "331 Username OK, need password.\r\n"
                         elif "PASS" in command:
@@ -122,13 +147,13 @@ class Honeypot:
                         else:
                             response = "502 Command not implemented.\r\n"
 
-                    elif port == 22:  # SSH
+                    elif port == 22:
                         if ":" in command:
                             response = "Permission denied, please try again.\n"
                         else:
                             response = "Protocol mismatch.\n"
 
-                    elif port in [80, 443]:  # HTTP/HTTPS
+                    elif port in [80, 443]:
                         if command.startswith("GET"):
                             if "WP-ADMIN" in command:
                                 response = "HTTP/1.1 302 Found\r\nLocation: /login\r\n\r\n"
