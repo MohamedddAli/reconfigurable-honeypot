@@ -81,10 +81,10 @@ class Honeypot:
     def is_dos_detected(self, remote_ip):
         now = time.time()
         history = self.connection_history.get(remote_ip, [])
-        history = [ts for ts in history if now - ts < 10]
+        history = [ts for ts in history if now - ts < 5]
         history.append(now)
         self.connection_history[remote_ip] = history
-        return len(history) > 20
+        return len(history) > 99  # More than 99 connections in 5 seconds
 
     def handle_connection(self, client_socket, remote_ip, port):
         service_banners = {
