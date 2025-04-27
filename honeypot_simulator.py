@@ -153,13 +153,13 @@ class HoneypotSimulator:
         ) as executor:
             while time.time() < end_time:
                 simulation_choices = [
-                   # lambda: self.simulate_port_scan(),
-                   # lambda: self.simulate_brute_force(21),
-                   # lambda: self.simulate_brute_force(22),
+                    lambda: self.simulate_port_scan(),
+                    lambda: self.simulate_brute_force(21),
+                    lambda: self.simulate_brute_force(22),
                    # lambda: self.simulate_connection(80),
-                    lambda: self.simulate_dos_attack(21, 100),
-                    lambda: self.simulate_dos_attack(22, 100),
-                    lambda: self.simulate_dos_attack(80, 100)
+                   # lambda: self.simulate_dos_attack(21, 100),
+                   # lambda: self.simulate_dos_attack(22, 100),
+                   # lambda: self.simulate_dos_attack(80, 100)
                 ]
                 executor.submit(random.choice(simulation_choices))
                 time.sleep(random.uniform(*self.intensity_settings[self.intensity]["delay_range"]))

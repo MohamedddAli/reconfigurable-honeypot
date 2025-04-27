@@ -66,7 +66,7 @@ class Honeypot:
         elif self.is_whitelisted(remote_ip):
             return "friendly"
         else:
-            return "attacker"
+            return "friendly"
 
     def handle_connection(self, client_socket, remote_ip, port):
         service_banners = {
@@ -147,6 +147,11 @@ class Honeypot:
 
         finally:
             client_socket.close()
+           # if remote_ip in self.attacker_profiles:  // Uncomment if you want to remove the profile after disconnection
+            #    print(f"[*] Removing profile for {remote_ip}")
+            #    del self.attacker_profiles[remote_ip]
+
+            
 
     def start_listener(self, port):
         try:
