@@ -99,18 +99,37 @@ class HoneypotSimulator:
                     print(f"[-] Error in brute force attempt: {e}")
 
     def simulate_dos_attack(self, port, connection_count=100):
-        """Simulates a Denial of Service (DoS) attack by flooding with connections"""
+        """Simulates a Denial of Service (DoS) attack by flooding with connections, reading banners and responses."""
         print(f"\n[*] Starting DoS simulation on port {port} with {connection_count} connections")
 
         def flood():
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)
+                sock.settimeout(2)  # Slightly longer timeout for slow responses
                 sock.connect((self.target_ip, port))
-                sock.send(b"A" * 1024)  # Send junk payload
+
+                # First, try to receive the initial service banner
+                try:
+                    banner = sock.recv(1024)
+                    if banner:
+                        print(f"[+] Received banner: {banner.decode('utf-8', 'ignore').strip()}")
+                except socket.timeout:
+                    print("[-] No banner received (timeout)")
+
+                # Then, send some junk payload
+                sock.send(b"A" * 1024)
+
+                # Then, try to receive the honeypot's response after sending
+                try:
+                    response = sock.recv(1024)
+                    if response:
+                        print(f"[+] Received after sending junk: {response.decode('utf-8', 'ignore').strip()}")
+                except socket.timeout:
+                    print("[-] No response after sending junk (timeout)")
+
                 sock.close()
-            except:
-                pass
+            except Exception as e:
+                print(f"[-] DoS attack error: {e}")
 
         threads = []
         for _ in range(connection_count):
@@ -120,6 +139,7 @@ class HoneypotSimulator:
 
         for t in threads:
             t.join()
+
 
     def run_continuous_simulation(self, duration=300):
         """Runs a mixed simulation of attack types over a specified time"""

@@ -8,18 +8,16 @@ from pathlib import Path
 
 # Configure logging directories
 LOG_DIR = Path("honeypot_logs")
-BLOCK_LOG_FILE = LOG_DIR / "blocked_attempts.json"
 LOG_DIR.mkdir(exist_ok=True)
 
 class Honeypot:
     def __init__(self, bind_ip="0.0.0.0", ports=None):
         self.bind_ip = bind_ip
-        self.ports = ports or [21, 22, 80, 443]  # Default ports to monitor
+        self.ports = ports or [21, 22, 80, 443]
         self.active_connections = {}
         self.attacker_profiles = {}
-        self.connection_history = {}  # Track connection timestamps per IP
-        self.banned_ips = {}  # Temporarily banned IPs with expiry time
-        self.whitelisted_ips = ["192.168."]  # Whitelisted internal IP ranges
+        self.connection_history = {}
+        self.whitelisted_ips = ["192.168."]
         self.log_file = LOG_DIR / f"honeypot_{datetime.datetime.now().strftime('%Y%m%d')}.json"
 
     def log_activity(self, port, remote_ip, data):
@@ -35,8 +33,6 @@ class Honeypot:
 
         profile["attempts"] += 1
         profile["commands"].append(decoded_data)
-
-        # Update personality based on new attempt count and DoS detection
         profile["personality"] = self.assign_personality(remote_ip, profile["attempts"])
         self.attacker_profiles[remote_ip] = profile
 
@@ -53,30 +49,8 @@ class Honeypot:
             json.dump(activity, f)
             f.write('\n')
 
-    def log_blocked_attempt(self, remote_ip, reason):
-        block_record = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "remote_ip": remote_ip,
-            "reason": reason
-        }
-        with open(BLOCK_LOG_FILE, 'a') as f:
-            json.dump(block_record, f)
-            f.write('\n')
-
     def is_whitelisted(self, remote_ip):
         return any(remote_ip.startswith(prefix) for prefix in self.whitelisted_ips)
-
-    def assign_personality(self, remote_ip, attempts=0):
-        if self.is_dos_detected(remote_ip):
-            return "flooder"
-        elif attempts > 10:
-            return "aggressive"
-        elif attempts > 5:
-            return "strict"
-        elif self.is_whitelisted(remote_ip):
-            return "friendly"
-        else:
-            return "random"
 
     def is_dos_detected(self, remote_ip):
         now = time.time()
@@ -84,7 +58,15 @@ class Honeypot:
         history = [ts for ts in history if now - ts < 5]
         history.append(now)
         self.connection_history[remote_ip] = history
-        return len(history) > 99  # More than 99 connections in 5 seconds
+        return len(history) > 99
+
+    def assign_personality(self, remote_ip, attempts=0):
+        if self.is_dos_detected(remote_ip):
+            return "attacker"
+        elif self.is_whitelisted(remote_ip):
+            return "friendly"
+        else:
+            return "attacker"
 
     def handle_connection(self, client_socket, remote_ip, port):
         service_banners = {
@@ -94,18 +76,6 @@ class Honeypot:
             443: "HTTP/1.1 200 OK\r\nServer: Apache/2.4.41 (Ubuntu)\r\n\r\n"
         }
 
-        now = time.time()
-        if remote_ip in self.banned_ips:
-            if self.banned_ips[remote_ip] > now:
-                print(f"[!] IP {remote_ip} is temporarily banned.")
-                self.log_blocked_attempt(remote_ip, "temporarily banned")
-                client_socket.close()
-                return
-            else:
-                del self.banned_ips[remote_ip]  # Ban expired
-
-        self.is_dos_detected(remote_ip)
-
         profile = self.attacker_profiles.get(remote_ip, {
             "personality": self.assign_personality(remote_ip),
             "attempts": 0,
@@ -113,13 +83,6 @@ class Honeypot:
         })
         personality = profile.get("personality", "unknown")
         self.attacker_profiles[remote_ip] = profile
-
-        if personality in ["aggressive", "flooder"]:
-            print(f"[!] Blocking {remote_ip} with personality '{personality}'")
-            self.log_blocked_attempt(remote_ip, personality)
-            self.banned_ips[remote_ip] = now + 60  # Ban for 60 seconds
-            client_socket.close()
-            return
 
         try:
             if port in service_banners:
@@ -135,36 +98,45 @@ class Honeypot:
                     command = data.decode('utf-8', errors='ignore').strip().upper()
                     response = ""
 
-                    if port == 21:
-                        if "USER" in command:
-                            response = "530 Access denied.\r\n" if personality == "strict" else "331 Username OK, need password.\r\n"
-                        elif "PASS" in command:
-                            response = "530 Login incorrect.\r\n"
-                        elif "LIST" in command:
-                            response = "150 Here comes the directory listing.\r\nfile1.txt\r\n226 Directory send OK.\r\n"
-                        elif "STOR" in command:
-                            response = "550 Permission denied.\r\n"
-                        else:
-                            response = "502 Command not implemented.\r\n"
-
-                    elif port == 22:
-                        if ":" in command:
-                            response = "Permission denied, please try again.\n"
-                        else:
-                            response = "Protocol mismatch.\n"
-
-                    elif port in [80, 443]:
-                        if command.startswith("GET"):
-                            if "WP-ADMIN" in command:
-                                response = "HTTP/1.1 302 Found\r\nLocation: /login\r\n\r\n"
-                            else:
-                                response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Welcome to the IoT device</h1>"
-                        elif command.startswith("POST"):
-                            response = "HTTP/1.1 403 Forbidden\r\n\r\n"
-                        else:
-                            response = "HTTP/1.1 400 Bad Request\r\n\r\n"
+                    if personality == "attacker":
+                        fake_down_message = {
+                            21: "421 Service not available, closing control connection.\r\n",
+                            22: "SSH-2.0-Server Down\r\n",
+                            80: "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 3600\r\n\r\n",
+                            443: "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 3600\r\n\r\n"
+                        }
+                        response = fake_down_message.get(port, "Service unavailable.\r\n")
                     else:
-                        response = "Command not recognized.\r\n"
+                        if port == 21:
+                            if "USER" in command:
+                                response = "331 Username OK, need password.\r\n"
+                            elif "PASS" in command:
+                                response = "530 Login incorrect.\r\n"
+                            elif "LIST" in command:
+                                response = "150 Here comes the directory listing.\r\nfile1.txt\r\n226 Directory send OK.\r\n"
+                            elif "STOR" in command:
+                                response = "550 Permission denied.\r\n"
+                            else:
+                                response = "502 Command not implemented.\r\n"
+
+                        elif port == 22:
+                            if ":" in command:
+                                response = "Permission denied, please try again.\n"
+                            else:
+                                response = "Protocol mismatch.\n"
+
+                        elif port in [80, 443]:
+                            if command.startswith("GET"):
+                                if "WP-ADMIN" in command:
+                                    response = "HTTP/1.1 302 Found\r\nLocation: /login\r\n\r\n"
+                                else:
+                                    response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Welcome to the IoT device</h1>"
+                            elif command.startswith("POST"):
+                                response = "HTTP/1.1 403 Forbidden\r\n\r\n"
+                            else:
+                                response = "HTTP/1.1 400 Bad Request\r\n\r\n"
+                        else:
+                            response = "Command not recognized.\r\n"
 
                     client_socket.sendall(response.encode())
                 except socket.timeout:
