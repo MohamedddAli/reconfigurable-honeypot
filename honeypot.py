@@ -66,7 +66,7 @@ class Honeypot:
         history = [ts for ts in history if now - ts < 30]
         history.append(now)
         self.connection_history[remote_ip] = history
-        if len(history) < 10 and (now - history[0]) > 20:
+        if len(history) < 20 and (now - history[0]) > 20:
             return True
         return False
 
@@ -78,7 +78,7 @@ class Honeypot:
         elif self.is_whitelisted(remote_ip):
             return "friendly"
         else:
-            return "friendly" if attempts < 10 else "unknown"
+            return "friendly" if attempts < 100 else "unknown"
 
     def handle_connection(self, client_socket, remote_ip, port):
         service_banners = {
@@ -162,8 +162,8 @@ class Honeypot:
 
         finally:
             client_socket.close()
-            if remote_ip in self.attacker_profiles:
-                del self.attacker_profiles[remote_ip]
+            #if remote_ip in self.attacker_profiles:
+                #del self.attacker_profiles[remote_ip]
 
     def start_listener(self, port):
         try:

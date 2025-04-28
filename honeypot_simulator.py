@@ -129,7 +129,7 @@ class HoneypotSimulator:
         for t in threads:
             t.join()
 
-    def simulate_slowloris_attack(self, port, connection_count=20):
+    def simulate_slowloris_attack(self, port, connection_count=1):
         print(f"\n[*] Starting Slowloris attack on port {port} with {connection_count} slow connections")
 
         def slowloris_connection():
@@ -145,10 +145,10 @@ class HoneypotSimulator:
                 except socket.timeout:
                     print("[-] No banner received during Slowloris attack.")
 
-                for _ in range(50):
+                for _ in range(5):
                     try:
                         sock.send(b"X-a: b\r\n")
-                        time.sleep(1)
+                        time.sleep(4)
                     except Exception:
                         break
 
@@ -176,14 +176,14 @@ class HoneypotSimulator:
         ) as executor:
             while time.time() < end_time:
                 simulation_choices = [
-                    lambda: self.simulate_port_scan(),
-                    lambda: self.simulate_brute_force(21),
-                    lambda: self.simulate_brute_force(22),
-                    lambda: self.simulate_connection(80),
-                    lambda: self.simulate_dos_attack(21, 100),
-                    lambda: self.simulate_dos_attack(22, 100),
-                    lambda: self.simulate_dos_attack(80, 100),
-                    lambda: self.simulate_slowloris_attack(80),
+                    #lambda: self.simulate_port_scan(),
+                    #lambda: self.simulate_brute_force(21),
+                    #lambda: self.simulate_brute_force(22),
+                    #lambda: self.simulate_connection(80),
+                    #lambda: self.simulate_dos_attack(21, 100),
+                    #lambda: self.simulate_dos_attack(22, 100),
+                    #lambda: self.simulate_dos_attack(80, 100),
+                    #lambda: self.simulate_slowloris_attack(80),
                     lambda: self.simulate_slowloris_attack(443)
                 ]
                 executor.submit(random.choice(simulation_choices))
