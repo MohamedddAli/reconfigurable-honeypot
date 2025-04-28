@@ -60,13 +60,25 @@ class Honeypot:
         self.connection_history[remote_ip] = history
         return len(history) > 99
 
+    def is_slowloris_detected(self, remote_ip):
+        now = time.time()
+        history = self.connection_history.get(remote_ip, [])
+        history = [ts for ts in history if now - ts < 30]
+        history.append(now)
+        self.connection_history[remote_ip] = history
+        if len(history) < 10 and (now - history[0]) > 20:
+            return True
+        return False
+
     def assign_personality(self, remote_ip, attempts=0):
         if self.is_dos_detected(remote_ip):
             return "attacker"
+        elif self.is_slowloris_detected(remote_ip):
+            return "slowloris"
         elif self.is_whitelisted(remote_ip):
             return "friendly"
         else:
-            return "friendly"
+            return "friendly" if attempts < 10 else "unknown"
 
     def handle_connection(self, client_socket, remote_ip, port):
         service_banners = {
@@ -106,6 +118,9 @@ class Honeypot:
                             443: "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 3600\r\n\r\n"
                         }
                         response = fake_down_message.get(port, "Service unavailable.\r\n")
+                    elif personality == "slowloris":
+                        time.sleep(3)
+                        response = "HTTP/1.1 408 Request Timeout\r\n\r\n"
                     else:
                         if port == 21:
                             if "USER" in command:
@@ -147,11 +162,8 @@ class Honeypot:
 
         finally:
             client_socket.close()
-           # if remote_ip in self.attacker_profiles:  // Uncomment if you want to remove the profile after disconnection
-            #    print(f"[*] Removing profile for {remote_ip}")
-            #    del self.attacker_profiles[remote_ip]
-
-            
+            if remote_ip in self.attacker_profiles:
+                del self.attacker_profiles[remote_ip]
 
     def start_listener(self, port):
         try:
