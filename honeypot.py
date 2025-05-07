@@ -5,8 +5,10 @@ import json
 import threading
 import time
 from pathlib import Path
+import joblib
+import pandas as pd
 
-# Configure logging directories
+# Configure logging directory
 LOG_DIR = Path("honeypot_logs")
 LOG_DIR.mkdir(exist_ok=True)
 
@@ -19,6 +21,14 @@ class Honeypot:
         self.connection_history = {}
         self.whitelisted_ips = ["192.168."]
         self.log_file = LOG_DIR / f"honeypot_{datetime.datetime.now().strftime('%Y%m%d')}.json"
+
+        # Load ML model
+        try:
+            self.ml_model = joblib.load("ml_model.pkl")
+            print("[+] ML model loaded successfully.")
+        except Exception as e:
+            print(f"[!] Failed to load ML model: {e}")
+            self.ml_model = None
 
     def log_activity(self, port, remote_ip, data):
         decoded_data = data.decode('utf-8', errors='ignore').strip()
@@ -33,7 +43,9 @@ class Honeypot:
 
         profile["attempts"] += 1
         profile["commands"].append(decoded_data)
-        profile["personality"] = self.assign_personality(remote_ip, profile["attempts"])
+
+        # Use ML to assign personality
+        profile["personality"] = self.assign_personality(remote_ip, profile["attempts"], port, profile["commands"])
         self.attacker_profiles[remote_ip] = profile
 
         activity = {
@@ -41,7 +53,7 @@ class Honeypot:
             "remote_ip": remote_ip,
             "port": port,
             "data": decoded_data,
-            "personality": profile.get("personality", "unknown"),
+            "personality": profile["personality"],
             "attempts": profile["attempts"]
         }
 
@@ -66,18 +78,37 @@ class Honeypot:
         history = [ts for ts in history if now - ts < 30]
         history.append(now)
         self.connection_history[remote_ip] = history
-        if len(history) < 20 and (now - history[0]) > 20:
-            return True
-        return False
+        return len(history) < 20 and (now - history[0]) > 20
 
-    def assign_personality(self, remote_ip, attempts=0):
-        if self.is_dos_detected(remote_ip):
-            return "attacker"
-        elif self.is_slowloris_detected(remote_ip):
-            return "slowloris"
-        elif self.is_whitelisted(remote_ip):
+    def extract_features(self, remote_ip, attempts, port, commands):
+        return pd.DataFrame([{
+            "ip_octet": int(remote_ip.split(".")[0]),
+            "attempts": attempts,
+            "port": port,
+            "command_count": len(commands),
+            "avg_command_length": sum(len(cmd) for cmd in commands) / len(commands) if commands else 0
+        }])
+
+    def assign_personality(self, remote_ip, attempts=0, port=0, commands=None):
+        if self.is_whitelisted(remote_ip):
             return "friendly"
+
+        commands = commands or []
+
+        if self.ml_model:
+            try:
+                features = self.extract_features(remote_ip, attempts, port, commands)
+                prediction = self.ml_model.predict(features)[0]
+                return prediction
+            except Exception as e:
+                print(f"[!] ML prediction error: {e}")
+                return "unknown"
         else:
+            # Fallback behavior
+            if self.is_dos_detected(remote_ip):
+                return "attacker"
+            elif self.is_slowloris_detected(remote_ip):
+                return "attacker"
             return "friendly" if attempts < 100 else "unknown"
 
     def handle_connection(self, client_socket, remote_ip, port):
@@ -159,18 +190,14 @@ class Honeypot:
                 except Exception as e:
                     print(f"[!] Error processing command from {remote_ip}:{port} — {e}")
                     break
-
         finally:
             client_socket.close()
-            #if remote_ip in self.attacker_profiles:
-                #del self.attacker_profiles[remote_ip]
 
     def start_listener(self, port):
         try:
             server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server.bind((self.bind_ip, port))
             server.listen(5)
-
             print(f"[*] Listening on {self.bind_ip}:{port}")
 
             while True:
@@ -185,7 +212,7 @@ class Honeypot:
                 client_handler.start()
 
         except Exception as e:
-            print(f"Error starting listener on port {port}: {e}")
+            print(f"[!] Error starting listener on port {port}: {e}")
 
 def main():
     honeypot = Honeypot()
