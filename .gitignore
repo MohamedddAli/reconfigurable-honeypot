@@ -1,1 +1,28 @@
-DDos_dataset.csv
+# Machine learning models and data
+*.joblib
+*.pkl
+*.h5
+*.csv
+
+# Logs
+honeypot_logs/
+*.log
+*.jsonl
+
+# Python environment
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS/Editor files
+.DS_Store
+*.swp
+*.bak
+
+# Jupyter/IPython
+.ipynb_checkpoints/
+
+# VS Code settings (optional)
+.vscode/

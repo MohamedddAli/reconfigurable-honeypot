@@ -1,209 +1,114 @@
 import socket
-import sys
-import datetime
-import json
 import threading
-import time
+import json
+import joblib
+import numpy as np
 from pathlib import Path
+from datetime import datetime
 
-# Configure logging directories
+# Load trained model and artifacts
+model = joblib.load("combined_model.joblib")
+encoder = joblib.load("combined_label_encoder.joblib")
+features_info = joblib.load("combined_features.joblib")["features"]
+
+# Ports the honeypot listens on
+HONEYPOT_PORTS = [21, 22, 80, 443, 9999]
+HOST = "0.0.0.0"
+
+# Create log directory and file
 LOG_DIR = Path("honeypot_logs")
 LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / "honeypot_log.jsonl"
 
-class Honeypot:
-    def __init__(self, bind_ip="0.0.0.0", ports=None):
-        self.bind_ip = bind_ip
-        self.ports = ports or [21, 22, 80, 443]
-        self.active_connections = {}
-        self.attacker_profiles = {}
-        self.connection_history = {}
-        self.whitelisted_ips = ["192.168."]
-        self.log_file = LOG_DIR / f"honeypot_{datetime.datetime.now().strftime('%Y%m%d')}.json"
+# Standard responses for BENIGN traffic
+NORMAL_RESPONSES = {
+    21: "220 FTP server ready\r\n",
+    22: "SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.1\r\n",
+    80: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Welcome</h1>",
+    443: "HTTP/1.1 200 OK\r\nServer: Apache\r\n\r\nSecure connection established."
+}
 
-    def log_activity(self, port, remote_ip, data):
-        decoded_data = data.decode('utf-8', errors='ignore').strip()
-        if not decoded_data:
+# Reconfigured responses for malicious predictions
+BLOCKED_RESPONSES = {
+    21: "421 Service not available\r\n",
+    22: "SSH-2.0-Server Down\r\n",
+    80: "HTTP/1.1 503 Service Unavailable\r\n\r\n",
+    443: "HTTP/1.1 503 Service Unavailable\r\n\r\n"
+}
+
+def classify_packet(json_payload):
+    try:
+        data_dict = json.loads(json_payload)
+        features = [data_dict.get(col, 0) for col in features_info]
+        features_array = np.array(features).reshape(1, -1)
+        prediction = model.predict(features_array)[0]
+        return encoder.inverse_transform([prediction])[0]  # e.g., "BENIGN", "DoS"
+    except Exception as e:
+        print(f"[!] Classification error: {e}")
+        return "UNKNOWN"
+
+def log_activity(ip, port, prediction, raw_data):
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "remote_ip": ip,
+        "port": port,
+        "prediction": prediction,
+        "raw_data": raw_data
+    }
+    with open(LOG_FILE, "a") as f:
+        f.write(json.dumps(log_entry) + "\n")
+
+def handle_client(client_socket, _unused_port=9999):
+    try:
+        remote_ip = client_socket.getpeername()[0]
+        data = client_socket.recv(8192)
+        if not data:
             return
 
-        profile = self.attacker_profiles.get(remote_ip, {
-            "personality": "unknown",
-            "attempts": 0,
-            "commands": []
-        })
+        decoded_data = data.decode('utf-8')
+        packet = json.loads(decoded_data)
+        actual_port = int(packet.get("Port", 80))  # Default to 80 if missing
 
-        profile["attempts"] += 1
-        profile["commands"].append(decoded_data)
-        profile["personality"] = self.assign_personality(remote_ip, profile["attempts"])
-        self.attacker_profiles[remote_ip] = profile
+        prediction_label = classify_packet(decoded_data)
 
-        activity = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "remote_ip": remote_ip,
-            "port": port,
-            "data": decoded_data,
-            "personality": profile.get("personality", "unknown"),
-            "attempts": profile["attempts"]
-        }
-
-        with open(self.log_file, 'a') as f:
-            json.dump(activity, f)
-            f.write('\n')
-
-    def is_whitelisted(self, remote_ip):
-        return any(remote_ip.startswith(prefix) for prefix in self.whitelisted_ips)
-
-    def is_dos_detected(self, remote_ip):
-        now = time.time()
-        history = self.connection_history.get(remote_ip, [])
-        history = [ts for ts in history if now - ts < 5]
-        history.append(now)
-        self.connection_history[remote_ip] = history
-        return len(history) > 99
-
-    def is_slowloris_detected(self, remote_ip):
-        now = time.time()
-        history = self.connection_history.get(remote_ip, [])
-        history = [ts for ts in history if now - ts < 30]
-        history.append(now)
-        self.connection_history[remote_ip] = history
-        if len(history) < 20 and (now - history[0]) > 20:
-            return True
-        return False
-
-    def assign_personality(self, remote_ip, attempts=0):
-        if self.is_dos_detected(remote_ip):
-            return "attacker"
-        elif self.is_slowloris_detected(remote_ip):
-            return "slowloris"
-        elif self.is_whitelisted(remote_ip):
-            return "friendly"
+        if prediction_label == "BENIGN":
+            response = NORMAL_RESPONSES.get(actual_port, "Service OK\r\n")
         else:
-            return "friendly" if attempts < 100 else "unknown"
+            response = BLOCKED_RESPONSES.get(actual_port, "Service unavailable\r\n")
 
-    def handle_connection(self, client_socket, remote_ip, port):
-        service_banners = {
-            21: "220 FTP server ready\r\n",
-            22: "SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.1\r\n",
-            80: "HTTP/1.1 200 OK\r\nServer: Apache/2.4.41 (Ubuntu)\r\n\r\n",
-            443: "HTTP/1.1 200 OK\r\nServer: Apache/2.4.41 (Ubuntu)\r\n\r\n"
-        }
+        print(f"[+] From {remote_ip}, Port: {actual_port}, Prediction: {prediction_label}")
+        log_activity(remote_ip, actual_port, prediction_label, decoded_data)
+        client_socket.sendall(response.encode())
 
-        profile = self.attacker_profiles.get(remote_ip, {
-            "personality": self.assign_personality(remote_ip),
-            "attempts": 0,
-            "commands": []
-        })
-        personality = profile.get("personality", "unknown")
-        self.attacker_profiles[remote_ip] = profile
+    except Exception as e:
+        print(f"[!] Error handling client: {e}")
+    finally:
+        client_socket.close()
+    print(f"[-] Connection closed.")
 
-        try:
-            if port in service_banners:
-                client_socket.send(service_banners[port].encode())
+def start_listener(port):
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind((HOST, port))
+    server.listen(5)
+    print(f"[*] Listening on port {port}")
 
-            while True:
-                try:
-                    data = client_socket.recv(1024)
-                    if not data:
-                        break
-
-                    self.log_activity(port, remote_ip, data)
-                    command = data.decode('utf-8', errors='ignore').strip().upper()
-                    response = ""
-
-                    if personality == "attacker":
-                        fake_down_message = {
-                            21: "421 Service not available, closing control connection.\r\n",
-                            22: "SSH-2.0-Server Down\r\n",
-                            80: "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 3600\r\n\r\n",
-                            443: "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 3600\r\n\r\n"
-                        }
-                        response = fake_down_message.get(port, "Service unavailable.\r\n")
-                    elif personality == "slowloris":
-                        time.sleep(3)
-                        response = "HTTP/1.1 408 Request Timeout\r\n\r\n"
-                    else:
-                        if port == 21:
-                            if "USER" in command:
-                                response = "331 Username OK, need password.\r\n"
-                            elif "PASS" in command:
-                                response = "530 Login incorrect.\r\n"
-                            elif "LIST" in command:
-                                response = "150 Here comes the directory listing.\r\nfile1.txt\r\n226 Directory send OK.\r\n"
-                            elif "STOR" in command:
-                                response = "550 Permission denied.\r\n"
-                            else:
-                                response = "502 Command not implemented.\r\n"
-
-                        elif port == 22:
-                            if ":" in command:
-                                response = "Permission denied, please try again.\n"
-                            else:
-                                response = "Protocol mismatch.\n"
-
-                        elif port in [80, 443]:
-                            if command.startswith("GET"):
-                                if "WP-ADMIN" in command:
-                                    response = "HTTP/1.1 302 Found\r\nLocation: /login\r\n\r\n"
-                                else:
-                                    response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Welcome to the IoT device</h1>"
-                            elif command.startswith("POST"):
-                                response = "HTTP/1.1 403 Forbidden\r\n\r\n"
-                            else:
-                                response = "HTTP/1.1 400 Bad Request\r\n\r\n"
-                        else:
-                            response = "Command not recognized.\r\n"
-
-                    client_socket.sendall(response.encode())
-                except socket.timeout:
-                    break
-                except Exception as e:
-                    print(f"[!] Error processing command from {remote_ip}:{port} — {e}")
-                    break
-
-        finally:
-            client_socket.close()
-            #if remote_ip in self.attacker_profiles:
-                #del self.attacker_profiles[remote_ip]
-
-    def start_listener(self, port):
-        try:
-            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server.bind((self.bind_ip, port))
-            server.listen(5)
-
-            print(f"[*] Listening on {self.bind_ip}:{port}")
-
-            while True:
-                client, addr = server.accept()
-                client.settimeout(5.0)
-                print(f"[*] Accepted connection from {addr[0]}:{addr[1]}")
-
-                client_handler = threading.Thread(
-                    target=self.handle_connection,
-                    args=(client, addr[0], port)
-                )
-                client_handler.start()
-
-        except Exception as e:
-            print(f"Error starting listener on port {port}: {e}")
+    while True:
+        client, _ = server.accept()
+        thread = threading.Thread(target=handle_client, args=(client, port))
+        thread.start()
 
 def main():
-    honeypot = Honeypot()
+    for port in HONEYPOT_PORTS:
+        t = threading.Thread(target=start_listener, args=(port,))
+        t.daemon = True
+        t.start()
 
-    for port in honeypot.ports:
-        listener_thread = threading.Thread(
-            target=honeypot.start_listener,
-            args=(port,)
-        )
-        listener_thread.daemon = True
-        listener_thread.start()
-
+    print("[*] Honeypot running. Press Ctrl+C to stop.")
     try:
         while True:
-            time.sleep(1)
+            pass
     except KeyboardInterrupt:
-        print("\n[*] Shutting down honeypot...")
-        sys.exit(0)
+        print("\n[!] Shutting down honeypot.")
 
 if __name__ == "__main__":
     main()
